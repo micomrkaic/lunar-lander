@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunar Lander — starring Eagle the Fat Cat</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #080810; overflow: hidden;
+  }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; outline: none; border: 0; }
+  #status {
+    position: absolute; top: 8px; left: 0; right: 0;
+    text-align: center; color: #8890aa;
+    font: 14px monospace; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="status">loading...</div>
+<canvas id="canvas" width="960" height="640" tabindex="0"
+        oncontextmenu="event.preventDefault()"></canvas>
+<script>
+  var statusEl = document.getElementById('status');
+  var Module = {
+    canvas: (function () {
+      var c = document.getElementById('canvas');
+      c.addEventListener('click', function () { c.focus(); });
+      return c;
+    })(),
+    setStatus: function (t) { statusEl.textContent = t; },
+    onRuntimeInitialized: function () {
+      statusEl.textContent = '';
+      Module.canvas.focus();
+    }
+  };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

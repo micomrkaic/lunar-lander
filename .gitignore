@@ -1,0 +1,16 @@
+# build products
+lander
+terrain_test
+hiscore_test
+index.html
+index.js
+index.wasm
+lander-itch.zip
+
+# runtime state
+lander_hiscores.txt
+
+# editor/OS noise
+*.o
+*~
+.DS_Store
