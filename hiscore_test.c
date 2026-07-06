@@ -1,0 +1,39 @@
+#define main lander_main_unused
+#include "lander.c"
+#undef main
+int main(void) {
+    remove(SCORE_FILE);
+    Game g; memset(&g, 0, sizeof g);
+    /* fill beyond capacity, unsorted */
+    int vals[] = {120, 900, 340, 55, 780, 780, 10, 660, 205, 999, 1};
+    char nm[16];
+    for (int i = 0; i < 11; i++) {
+        snprintf(nm, sizeof nm, "P%d", i);
+        if (hiscores_qualifies(&g, vals[i])) hiscores_insert(&g, nm, vals[i]);
+    }
+    /* must be sorted desc, capped at N_HISCORES */
+    if (g.n_hiscores != N_HISCORES) { puts("FAIL count"); return 1; }
+    for (int i = 1; i < g.n_hiscores; i++)
+        if (g.hiscores[i].score > g.hiscores[i-1].score) { puts("FAIL order"); return 1; }
+    if (g.hiscores[0].score != 999) { puts("FAIL top"); return 1; }
+    /* score of 1 and 10 must not have displaced anything */
+    if (g.hiscores[N_HISCORES-1].score < 55) { puts("FAIL tail"); return 1; }
+    /* zero score never qualifies */
+    if (hiscores_qualifies(&g, 0)) { puts("FAIL zero"); return 1; }
+    /* empty name becomes PILOT */
+    Game g2; memset(&g2, 0, sizeof g2);
+    hiscores_insert(&g2, "", 42);
+    if (strcmp(g2.hiscores[0].name, "PILOT")) { puts("FAIL default name"); return 1; }
+    /* round-trip through the file */
+    Game g3; memset(&g3, 0, sizeof g3);
+    hiscores_save(&g);      /* overwrite with g's table */
+    hiscores_load(&g3);
+    if (g3.n_hiscores != g.n_hiscores) { puts("FAIL reload count"); return 1; }
+    for (int i = 0; i < g.n_hiscores; i++)
+        if (g3.hiscores[i].score != g.hiscores[i].score ||
+            strcmp(g3.hiscores[i].name, g.hiscores[i].name))
+            { puts("FAIL roundtrip"); return 1; }
+    remove(SCORE_FILE);
+    puts("hiscore tests: ALL PASS");
+    return 0;
+}
