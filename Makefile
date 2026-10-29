@@ -11,10 +11,11 @@ lander: lander.c
 # Build and run the test harnesses. They #include lander.c directly,
 # so they always test exactly the shipping code. The cksum guard
 # fails the run if the player's real scores file changed under it.
-test: terrain_test landing_test physics_test hiscore_test
+test: terrain_test landing_test physics_test gameplay_test hiscore_test
 	./terrain_test
 	./landing_test
 	./physics_test
+	./gameplay_test
 	@before="$$(cksum lander_hiscores.txt 2>/dev/null)"; \
 	 ./hiscore_test || exit 1; \
 	 after="$$(cksum lander_hiscores.txt 2>/dev/null)"; \
@@ -28,6 +29,9 @@ landing_test: landing_test.c lander.c
 	$(CC) -std=c17 -O2 -Wall $< -o $@ $(SDLLIBS) -lm
 
 physics_test: physics_test.c lander.c
+	$(CC) -std=c17 -O2 -Wall $< -o $@ $(SDLLIBS) -lm
+
+gameplay_test: gameplay_test.c lander.c
 	$(CC) -std=c17 -O2 -Wall $< -o $@ $(SDLLIBS) -lm
 
 hiscore_test: hiscore_test.c lander.c
@@ -57,8 +61,9 @@ itch: wasm
 # Deliberately leaves lander_hiscores.txt alone: that is player data,
 # not a build product.
 clean:
-	rm -f lander terrain_test landing_test physics_test hiscore_test \
-	      hiscore_test_scores.txt \
+	rm -f lander terrain_test landing_test physics_test gameplay_test \
+	      hiscore_test hiscore_test_scores.txt \
+	      gameplay_test_scores.txt gameplay_test_ghost.txt \
 	      index.html index.js index.wasm lander-itch.zip
 
 .PHONY: test wasm itch clean

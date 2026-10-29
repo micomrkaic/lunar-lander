@@ -12,3 +12,6 @@
 # player data and test scratch
 lander_hiscores.txt
 hiscore_test_scores.txt
+/gameplay_test
+lander_ghost.txt
+gameplay_test_*.txt
