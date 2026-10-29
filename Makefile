@@ -51,7 +51,7 @@ hiscore_test: hiscore_test.c lander.c
 wasm: lander.c shell.html
 	emcc -std=gnu17 -O2 lander.c -o index.html \
 	     --shell-file shell.html \
-	     -s USE_SDL=2 -s INITIAL_MEMORY=67108864 \
+	     -s USE_SDL=2 -s INITIAL_MEMORY=67108864 -s MINIFY_HTML=0 \
 	     -lidbfs.js
 
 # Zip ready to upload to itch.io (kind of project: HTML)
