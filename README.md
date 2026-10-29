@@ -56,6 +56,32 @@ make
 ./lander
 ```
 
+Install for your user, the standard Linux way (nothing outside `~/.local`):
+
+```sh
+make install          # binary, man page, desktop entry, icons, docs
+man 6 lander
+make uninstall        # removes all of that; keeps your scores
+```
+
+| What | Where |
+|---|---|
+| binary | `~/.local/bin/lander` |
+| manual | `~/.local/share/man/man6/lander.6` |
+| menu entry | `~/.local/share/applications/lander.desktop` |
+| icons | `~/.local/share/icons/hicolor/{48,64,128,256}x…/apps/lander.png` |
+| README, licence, art | `~/.local/share/doc/lander/` |
+| scores, daily ghosts | `~/.local/share/lander/` (or `$XDG_DATA_HOME/lander/`) |
+
+`~/.local/bin` must be on your `PATH` (it is by default on most
+distributions; `make install` warns if not), and `man` then finds the
+page automatically. System-wide: `sudo make install PREFIX=/usr/local`.
+Packagers: `make install DESTDIR=… PREFIX=/usr`.
+
+Scores from older versions, which kept `lander_hiscores.txt` in the
+working directory, are migrated by `make install` and also picked up by
+the game itself on first run.
+
 Browser (needs the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html);
 `source emsdk_env.sh` first):
 
@@ -108,9 +134,10 @@ the exact shipping code:
   makes is saved as a daily ghost and replayed, from memory and from the
   ghost file, and the ghost must touch down at exactly the same spot.
 - `hiscore_test` checks high-score ordering, the table cap, score
-  qualification, the default pilot name, and a save/load round trip. It
-  uses its own scratch file, and `make test` fails if your real
-  `lander_hiscores.txt` changes during the run.
+  qualification, the default pilot name, a save/load round trip, and
+  where save files go (`$XDG_DATA_HOME`, the `~/.local/share` fallback,
+  and directory creation). It uses its own scratch files, and `make test`
+  fails if your real scores file changes during the run.
 
 `make clean` removes build products only; it leaves your high scores
 alone.
@@ -146,9 +173,10 @@ alone.
 - **Text**: a hand-rolled vector stroke font (A-Z, 0-9, a little
   punctuation), so there is no
   SDL_ttf dependency and the WASM build stays small.
-- **High scores**: a plain text file natively; an IndexedDB-backed
-  IDBFS mount in the browser, so scores persist across sessions
-  (per browser — it is a local table, not a global leaderboard).
+- **High scores**: a plain text file in the XDG data directory
+  natively; an IndexedDB-backed IDBFS mount in the browser, so scores
+  persist across sessions (per browser — it is a local table, not a
+  global leaderboard).
 - **One file**: everything above is ~1,750 lines of C17 in `lander.c`.
   The only dependency is SDL2.
 

@@ -4,6 +4,7 @@
 #define main lander_main_unused
 #include "lander.c"
 #undef main
+#include <unistd.h>
 int main(void) {
     if (strcmp(SCORE_FILE, "hiscore_test_scores.txt") != 0) {
         puts("FAIL test is pointed at the real scores file"); return 1;
@@ -40,6 +41,33 @@ int main(void) {
             strcmp(g3.hiscores[i].name, g.hiscores[i].name))
             { puts("FAIL roundtrip"); return 1; }
     remove(SCORE_FILE);
+
+    /* XDG save location (GHOST_FILE is not pinned here, so ghost_path()
+     * is the real resolver). Sandboxed under the current directory.   */
+    char cwd[512], dir[600], want[700];
+    struct stat st;
+    if (!getcwd(cwd, sizeof cwd)) { puts("FAIL getcwd"); return 1; }
+    snprintf(dir, sizeof dir, "%s/xdg_test_tmp", cwd);
+    setenv("XDG_DATA_HOME", dir, 1);
+    snprintf(want, sizeof want, "%s/lander/ghost.txt", dir);
+    if (strcmp(ghost_path(), want)) { printf("FAIL xdg path %s\n", ghost_path()); return 1; }
+    snprintf(want, sizeof want, "%s/lander", dir);
+    if (stat(want, &st) || !S_ISDIR(st.st_mode)) { puts("FAIL xdg dir not created"); return 1; }
+    rmdir(want); rmdir(dir);
+
+    setenv("XDG_DATA_HOME", "relative/ignored", 1);   /* spec: ignore */
+    snprintf(dir, sizeof dir, "%s/home_test_tmp", cwd);
+    setenv("HOME", dir, 1);
+    snprintf(want, sizeof want, "%s/.local/share/lander/ghost.txt", dir);
+    if (strcmp(ghost_path(), want)) { printf("FAIL home path %s\n", ghost_path()); return 1; }
+    const char *chain[] = { "/.local/share/lander", "/.local/share", "/.local", "" };
+    for (int i = 0; i < 4; i++) {
+        snprintf(want, sizeof want, "%s%s", dir, chain[i]);
+        if (i == 0 && (stat(want, &st) || !S_ISDIR(st.st_mode))) {
+            puts("FAIL home dir not created"); return 1;
+        }
+        rmdir(want);
+    }
     puts("hiscore tests: ALL PASS");
     return 0;
 }

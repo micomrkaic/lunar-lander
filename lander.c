@@ -36,6 +36,10 @@
  * Sound is synthesized in the audio callback — no assets, no SDL_mixer.
  */
 
+/* POSIX for mkdir() and getenv-based XDG paths; the code is otherwise
+ * plain C17. Must precede every #include.                           */
+#define _POSIX_C_SOURCE 200809L
+
 #include <SDL.h>
 #include <math.h>
 #include <stdbool.h>
@@ -44,6 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -84,19 +89,17 @@ enum { W = 960, H = 640 };
 #define N_PARTICLES    256
 #define N_STARS        120
 #define N_HISCORES     8
-#define NAME_MAX       10
-#ifndef SCORE_FILE               /* tests override this before #include */
+#define PILOT_NAME_MAX       10
+/* Save files. Browser: the IndexedDB-backed IDBFS mount at /data.
+ * Native: the XDG data directory, $XDG_DATA_HOME/lander (default
+ * ~/.local/share/lander), resolved at run time — see save_path().
+ * Tests #define SCORE_FILE / GHOST_FILE to scratch files first.      */
 #ifdef __EMSCRIPTEN__
-#define SCORE_FILE     "/data/lander_hiscores.txt"   /* IDBFS mount */
-#else
-#define SCORE_FILE     "lander_hiscores.txt"
-#endif
+#ifndef SCORE_FILE
+#define SCORE_FILE     "/data/lander_hiscores.txt"
 #endif
 #ifndef GHOST_FILE
-#ifdef __EMSCRIPTEN__
 #define GHOST_FILE     "/data/lander_ghost.txt"
-#else
-#define GHOST_FILE     "lander_ghost.txt"
 #endif
 #endif
 #define AUDIO_SR       48000
@@ -147,7 +150,7 @@ typedef struct {
 } Ghost;
 
 typedef struct {
-    char name[NAME_MAX + 1];
+    char name[PILOT_NAME_MAX + 1];
     int  score;
 } HiScore;
 
@@ -212,7 +215,7 @@ typedef struct {
     Audio         audio;
     HiScore       hiscores[N_HISCORES];
     int           n_hiscores;
-    char          entry_name[NAME_MAX + 1];
+    char          entry_name[PILOT_NAME_MAX + 1];
     int           entry_len;
 } Game;
 
@@ -381,6 +384,50 @@ static void audio_trigger_landing(Audio *a)
     SDL_UnlockAudioDevice(a->dev);
 }
 
+/* ------------------------------------------------------------ save paths */
+
+#if !defined(SCORE_FILE) || !defined(GHOST_FILE)
+/* $XDG_DATA_HOME/lander/<name>, or ~/.local/share/lander/<name> when
+ * XDG_DATA_HOME is unset or relative (the spec says to ignore relative
+ * values). Creates the directory on first use. Falls back to <name>
+ * in the current directory if there is no usable home.              */
+static const char *save_path(char *buf, size_t n, const char *name)
+{
+    const char *x = getenv("XDG_DATA_HOME"), *h = getenv("HOME");
+    int k;
+    if (x && x[0] == '/')    k = snprintf(buf, n, "%s/lander", x);
+    else if (h && h[0])      k = snprintf(buf, n, "%s/.local/share/lander", h);
+    else                     return name;
+    if (k < 0 || (size_t)k >= n) return name;
+    for (char *p = buf + 1; *p; p++)            /* mkdir -p */
+        if (*p == '/') { *p = '\0'; mkdir(buf, 0755); *p = '/'; }
+    mkdir(buf, 0755);
+    int m = snprintf(buf + k, n - (size_t)k, "/%s", name);
+    if (m < 0 || (size_t)m >= n - (size_t)k) return name;
+    return buf;
+}
+#endif
+
+static const char *score_path(void)
+{
+#ifdef SCORE_FILE
+    return SCORE_FILE;
+#else
+    static char buf[1024];
+    return save_path(buf, sizeof buf, "hiscores.txt");
+#endif
+}
+
+static const char *ghost_path(void)
+{
+#ifdef GHOST_FILE
+    return GHOST_FILE;
+#else
+    static char buf[1024];
+    return save_path(buf, sizeof buf, "ghost.txt");
+#endif
+}
+
 /* ------------------------------------------------------------ high scores */
 
 /* file-scope so the Emscripten IDBFS callback below can reach it */
@@ -389,7 +436,12 @@ static Game g_game;
 static void hiscores_load(Game *g)
 {
     g->n_hiscores = 0;
-    FILE *f = fopen(SCORE_FILE, "r");
+    FILE *f = fopen(score_path(), "r");
+#ifndef SCORE_FILE
+    /* scores from before the XDG move sat in the working directory;
+     * read them once, and the next save writes the new location     */
+    if (!f) f = fopen("lander_hiscores.txt", "r");
+#endif
     if (!f) return;
     while (g->n_hiscores < N_HISCORES &&
            fscanf(f, "%10s %d",
@@ -409,7 +461,7 @@ EMSCRIPTEN_KEEPALIVE void hiscores_ready(void)
 
 static void hiscores_save(const Game *g)
 {
-    FILE *f = fopen(SCORE_FILE, "w");
+    FILE *f = fopen(score_path(), "w");
     if (!f) return;
     for (int i = 0; i < g->n_hiscores; i++)
         fprintf(f, "%s %d\n", g->hiscores[i].name, g->hiscores[i].score);
@@ -690,7 +742,7 @@ static uint32_t today_yyyymmdd(void)
  * depends on it.                                                     */
 static bool ghosts_save(void)
 {
-    FILE *f = fopen(GHOST_FILE, "w");
+    FILE *f = fopen(ghost_path(), "w");
     if (!f) return false;
     fprintf(f, "LANDERGHOST 1 %u\n", (unsigned)g_ghost_date);
     for (int lv = 1; lv <= N_GHOST_LEVELS; lv++) {
@@ -719,7 +771,7 @@ static void ghosts_load(uint32_t date)
 {
     memset(g_ghosts, 0, sizeof g_ghosts);
     g_ghost_date = date;
-    FILE *f = fopen(GHOST_FILE, "r");
+    FILE *f = fopen(ghost_path(), "r");
     if (!f) return;
     int ver; unsigned fdate;
     if (fscanf(f, "LANDERGHOST %d %u", &ver, &fdate) != 2 ||
@@ -1623,14 +1675,14 @@ static void handle_key(Game *g, SDL_Scancode sc)
 
     case ST_ENTRY:
         if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) {
-            if (g->entry_len < NAME_MAX) {
+            if (g->entry_len < PILOT_NAME_MAX) {
                 g->entry_name[g->entry_len++] =
                     (char)('A' + (sc - SDL_SCANCODE_A));
                 g->entry_name[g->entry_len] = '\0';
             }
         } else if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_0) {
             /* scancodes run 1..9 then 0 */
-            if (g->entry_len < NAME_MAX) {
+            if (g->entry_len < PILOT_NAME_MAX) {
                 char d = sc == SDL_SCANCODE_0
                        ? '0' : (char)('1' + (sc - SDL_SCANCODE_1));
                 g->entry_name[g->entry_len++] = d;
@@ -1702,6 +1754,8 @@ int main(int argc, char **argv)
     g->ren = SDL_CreateRenderer(g->win, -1,
                                 SDL_RENDERER_ACCELERATED |
                                 SDL_RENDERER_PRESENTVSYNC);
+    if (g->win && !g->ren)          /* no GPU (VM, remote X): software */
+        g->ren = SDL_CreateRenderer(g->win, -1, SDL_RENDERER_SOFTWARE);
     if (!g->win || !g->ren) {
         fprintf(stderr, "SDL: %s\n", SDL_GetError());
         return 1;

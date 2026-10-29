@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lunar Lander
+GenericName=Arcade Lander
+Comment=Land Eagle the fat cat on the Moon
+Exec=@BINDIR@/lander
+Icon=lander
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=lunar;lander;moon;cat;arcade;rocket;

@@ -1,0 +1,184 @@
+.\" lander.6 -- manual page for Lunar Lander starring Eagle the Fat Cat
+.\" Copyright (C) 2026 Mico Mrkaic
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH LANDER 6 2026-10-29 "Lunar Lander" "Games Manual"
+.SH NAME
+lander \- land Eagle the fat cat on the Moon
+.SH SYNOPSIS
+.B lander
+.SH DESCRIPTION
+.B lander
+is a classic arcade lunar lander with vector graphics and synthesized
+sound.
+The pilot is Eagle, a very round cat with excellent whiskers and a
+rocket strapped to his backside.
+Steer him down through gravity, wind and rough terrain onto a landing
+pad, softly and upright, without running out of fuel.
+.PP
+The game opens in a 960\(mu640 window.
+It takes no command-line options.
+.SH CONTROLS
+.TP 14
+.BR Left / Right ", " A / D
+Rotate Eagle anticlockwise / clockwise.
+.TP
+.BR Up ", " W
+Fire the rocket along Eagle's body axis.
+.TP
+.B Space
+Start a normal run (title screen).
+.TP
+.B D
+Start today's daily run (title screen); see
+.BR "DAILY MOON" .
+.TP
+.B P
+Pause or resume.
+.TP
+.B R
+After a landing, fly the next level.
+After a crash, retry the same moon if you have lives left; otherwise
+end the run.
+.TP
+.B Esc
+End the current run.
+On the title screen, quit.
+.TP
+.BR "A\(enZ" ", " "0\(en9" ", " Backspace ", " Return
+Type your name for the high-score table.
+.SH LANDING
+A touchdown counts as a landing only if
+.IP \(bu 3
+both feet are on the same green pad,
+.IP \(bu
+descent speed is under 28 and sideways drift under 18,
+.IP \(bu
+Eagle is within about 11\(de of upright.
+.PP
+Anything else is a crash, and so is any part of Eagle other than his
+feet touching rock.
+The world wraps horizontally: fly off one edge and you come back on the
+other.
+.SH SCORING
+A landing scores 50 \(mu the pad's multiplier, plus the fuel left in the
+tank.
+Narrower pads carry higher multipliers:
+.BR 2X " (90 px wide) through " 5X " (45 px)."
+From level 4 the 2X pad is replaced by a 5X.
+.PP
+The eight best runs are kept on the high-score table.
+.SH FUEL AND LIVES
+Fuel carries over from level to level.
+Each landing refuels 20 + 5 \(mu the pad multiplier, up to a full tank.
+Eagle gets lighter as he burns fuel, so the rocket kicks harder on a
+near-empty tank.
+.PP
+A run starts with three lives and can hold up to nine.
+A crash costs one, and you retry the same moon with the fuel you started
+it with.
+A landing on a 4X pad or better earns a life back.
+The run ends when the last life is gone, or when you press
+.BR Esc .
+.SH DIFFICULTY
+Each level brings rougher terrain, stronger gravity and narrower pads.
+.TP 14
+.B Level 3+
+Wind: a steady breeze from one side with gusts on top.
+The arrow at the top of the screen shows its direction and strength.
+.TP
+.B Level 5+
+A floating
+.B 6X
+pad swings from side to side.
+To land on it, match its speed as you touch down; Eagle then rides
+along with it.
+Flying into its underside is a crash.
+.SH HEADS-UP DISPLAY
+.TP 14
+.B F
+Fuel, with a bar gauge.
+.TP
+.B VH
+Horizontal speed (positive is to the right).
+.TP
+.B VV
+Vertical speed (positive is downwards).
+.TP
+.B ALT
+Height of Eagle's feet above whatever is directly below him.
+.TP
+Tilt gauge
+The needle shows Eagle's axis and the ticks mark the legal landing
+tilt.
+.PP
+A reading turns red when it is outside landing limits.
+On the right are the score, the level and one cat head per life.
+.PP
+Below about 90 px of altitude the camera zooms in 2\(mu, and it zooms
+back out above about 130 px.
+.SH DAILY MOON
+Pressing
+.B D
+on the title screen starts a run on the daily moon: the run seed is
+today's date, so everyone playing that day flies the same sequence of
+moons.
+.PP
+Your best landing on each daily level is saved, and the next time you fly
+that level it replays as a translucent blue
+.I ghost
+Eagle alongside you.
+The physics is deterministic, so the ghost retraces that flight
+exactly.
+Ghosts are kept for the current day only.
+.SH FILES
+.TP
+.I $XDG_DATA_HOME/lander/hiscores.txt
+The high-score table: one
+.RI \(dq name\~score \(dq
+pair per line.
+.TP
+.I $XDG_DATA_HOME/lander/ghost.txt
+Today's daily ghosts, stored as run-length-encoded keyboard input.
+.PP
+If
+.B XDG_DATA_HOME
+is unset or not an absolute path,
+.I ~/.local/share
+is used.
+The directory is created on first use.
+.SH ENVIRONMENT
+.TP
+.B XDG_DATA_HOME
+Base directory for the save files; see
+.BR FILES .
+.TP
+.BR SDL_VIDEODRIVER ", " SDL_AUDIODRIVER
+Passed through to SDL, for example
+.B SDL_AUDIODRIVER=dummy
+to play silently.
+Without a usable audio device the game runs silent on its own.
+.SH EXIT STATUS
+0 on a normal quit; 1 if SDL cannot open a window or renderer.
+.SH NOTES
+The same game builds to WebAssembly and runs in a browser, where scores
+and ghosts are kept in the browser's IndexedDB storage instead of files.
+.PP
+Everything is drawn with lines, and every sound is synthesized live;
+the game itself needs no image or sound files.
+.SH AUTHORS
+Programming and physics by Mico Mrkaic.
+Character design and art direction by the author's wife.
+Starring Eagle the Fat Cat.
+.SH COPYRIGHT
+Copyright \(co 2026 Mico Mrkaic.
+License GPLv3+: GNU GPL version 3 or later,
+.IR https://gnu.org/licenses/gpl.html .
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+.SH SEE ALSO
+Atari's
+.I Lunar Lander
+(1979), which started all this.
+.PP
+Source:
+.I https://github.com/micomrkaic/lunar-lander
