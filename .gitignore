@@ -1,16 +1,14 @@
 # build products
-lander
-terrain_test
-hiscore_test
-index.html
-index.js
-index.wasm
-lander-itch.zip
+/lander
+/terrain_test
+/landing_test
+/physics_test
+/hiscore_test
+/index.html
+/index.js
+/index.wasm
+/lander-itch.zip
 
-# runtime state
+# player data and test scratch
 lander_hiscores.txt
-
-# editor/OS noise
-*.o
-*~
-.DS_Store
+hiscore_test_scores.txt

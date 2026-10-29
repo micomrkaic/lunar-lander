@@ -20,6 +20,25 @@ int main(void)
             g.level = level;
             gen_terrain(&g);
 
+            /* the world wraps, so the ground must join up at the seam */
+            if (g.terrain[0].y != g.terrain[TERRAIN_N - 1].y) {
+                printf("FAIL L%d seed %d: seam step %.1f px\n", level, seed,
+                       g.terrain[TERRAIN_N - 1].y - g.terrain[0].y);
+                fails++;
+            }
+            for (float x = 0.5f; x < 40.0f; x += 1.5f)
+                if (fabsf(terrain_y(&g, x) - terrain_y(&g, x + W)) > 0.01f ||
+                    fabsf(terrain_y(&g, -x) - terrain_y(&g, W - x)) > 0.01f) {
+                    printf("FAIL L%d seed %d: terrain_y not periodic at "
+                           "x=%.1f\n", level, seed, x);
+                    fails++; break;
+                }
+            /* every edge, the seam's neighbours included, obeys this
+             * level's slope cap (mirrors max_d in gen_terrain)         */
+            float cap_d = 0.030f + 0.007f * (float)(level - 1);
+            if (cap_d > 0.060f) cap_d = 0.060f;
+            float cap = cap_d * H / ((float)W / (TERRAIN_N - 1)) + 1e-3f;
+
             for (int i = 0; i < TERRAIN_N; i++) {
                 float y = g.terrain[i].y;
                 if (y < ymin) ymin = y;
@@ -34,9 +53,9 @@ int main(void)
                     float dx = g.terrain[i].x - g.terrain[i-1].x;
                     float slope = dy / dx;
                     if (slope > worst_slope) worst_slope = slope;
-                    if (slope > 4.5f) {   /* ~77 deg — should never happen */
-                        printf("FAIL L%d seed %d: slope %.1f at vertex %d\n",
-                               level, seed, slope, i);
+                    if (slope > cap) {
+                        printf("FAIL L%d seed %d: slope %.2f > cap %.2f "
+                               "at vertex %d\n", level, seed, slope, cap, i);
                         fails++;
                     }
                 }

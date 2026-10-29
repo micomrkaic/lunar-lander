@@ -1,7 +1,13 @@
+/* Use a private scores file: this test deletes and rewrites it, and
+ * must never touch the player's real lander_hiscores.txt.            */
+#define SCORE_FILE "hiscore_test_scores.txt"
 #define main lander_main_unused
 #include "lander.c"
 #undef main
 int main(void) {
+    if (strcmp(SCORE_FILE, "hiscore_test_scores.txt") != 0) {
+        puts("FAIL test is pointed at the real scores file"); return 1;
+    }
     remove(SCORE_FILE);
     Game g; memset(&g, 0, sizeof g);
     /* fill beyond capacity, unsorted */

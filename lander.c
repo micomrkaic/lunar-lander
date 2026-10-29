@@ -16,14 +16,19 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
- * Native build:
- *   cc -std=c17 -O2 -Wall -Wextra lander.c -o lander $(sdl2-config --cflags --libs) -lm
+ * Native build:  make
+ *   (= cc -std=c17 -O2 -Wall -Wextra lander.c -o lander \
+ *        $(sdl2-config --cflags --libs) -lm)
  *
- * WASM build:
- *   emcc -std=c17 -O2 lander.c -o lander.html -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1
- *   (High scores use MEMFS in the browser: per-session only, unless you
- *    mount IDBFS. Audio starts after the first keypress, which the title
- *    screen guarantees.)
+ * WASM build:    make wasm      (needs the Emscripten SDK)
+ *   (= emcc -std=gnu17 -O2 lander.c -o index.html --shell-file shell.html \
+ *        -s USE_SDL=2 -s INITIAL_MEMORY=67108864 -lidbfs.js)
+ *   gnu17 because EM_ASM needs GNU statement expressions; fixed heap
+ *   because growable memory breaks TextDecoder (see Makefile). High
+ *   scores persist in IndexedDB via an IDBFS mount at /data. Audio
+ *   starts after the first keypress, which the title screen guarantees.
+ *
+ * Tests:         make test      (see README)
  *
  * Controls: LEFT/RIGHT (A/D) rotate, UP (W) thrust,
  *           P pause, ESC end flight, R continue, SPACE start.
@@ -55,16 +60,20 @@ enum { W = 960, H = 640 };
 #define SAFE_VY        28.0f    /* px/s max descent for safe landing       */
 #define SAFE_VX        18.0f    /* px/s max lateral                        */
 #define SAFE_ANGLE     0.20f    /* rad from vertical (~11 deg)             */
+#define LEG_X          13.0f    /* foot tips at (+-LEG_X, LEG_Y) in body   */
+#define LEG_Y          12.0f    /*   frame; shared by renderer + collision */
 #define TERRAIN_N      65       /* must be 2^k + 1 for midpoint displ.     */
 #define N_PADS         3
 #define N_PARTICLES    256
 #define N_STARS        120
 #define N_HISCORES     8
 #define NAME_MAX       10
+#ifndef SCORE_FILE               /* tests override this before #include */
 #ifdef __EMSCRIPTEN__
 #define SCORE_FILE     "/data/lander_hiscores.txt"   /* IDBFS mount */
 #else
 #define SCORE_FILE     "lander_hiscores.txt"
+#endif
 #endif
 #define AUDIO_SR       48000
 
@@ -127,7 +136,8 @@ typedef struct {
     uint64_t      prev_ticks;
     bool          keys[SDL_NUM_SCANCODES];
     bool          running;
-    uint32_t      rng;
+    uint32_t      rng;          /* gameplay only: terrain, stars, spawn  */
+    uint32_t      fx_rng;       /* cosmetics only: particles, flame      */
     Audio         audio;
     HiScore       hiscores[N_HISCORES];
     int           n_hiscores;
@@ -321,8 +331,11 @@ static void gen_terrain(Game *g)
     float rough = 0.10f + 0.035f * (float)(g->level - 1);
     if (rough > 0.26f) rough = 0.26f;
 
+    /* The world wraps horizontally, so the ground must too: the last
+     * vertex IS the first one, and every pass below treats the
+     * heightmap as a ring of TERRAIN_N-1 distinct vertices.           */
     h[0]             = frange(&g->rng, 0.60f, 0.85f);
-    h[TERRAIN_N - 1] = frange(&g->rng, 0.60f, 0.85f);
+    h[TERRAIN_N - 1] = h[0];
 
     for (int step = TERRAIN_N - 1; step >= 2; step /= 2) {
         float amp = rough * (float)step / (TERRAIN_N - 1);
@@ -343,57 +356,87 @@ static void gen_terrain(Game *g)
      * the allowed height change per vertex as a fraction of H.         */
     float max_d = 0.030f + 0.007f * (float)(g->level - 1);
     if (max_d > 0.060f) max_d = 0.060f;
-    for (int pass = 0; pass < 3; pass++) {
-        for (int i = 1; i < TERRAIN_N; i++) {
-            float d = h[i] - h[i - 1];
-            if (d >  max_d) h[i] = h[i - 1] + max_d;
-            if (d < -max_d) h[i] = h[i - 1] - max_d;
+    enum { M = TERRAIN_N - 1 };                  /* ring size */
+    for (int pass = 0; pass < 64; pass++) {      /* sweep to a fixpoint */
+        bool changed = false;
+        for (int k = 1; k <= M; k++) {           /* k == M: seam edge */
+            int i = k % M, j = k - 1;
+            float d = h[i] - h[j];
+            if (d >  max_d) { h[i] = h[j] + max_d; changed = true; }
+            if (d < -max_d) { h[i] = h[j] - max_d; changed = true; }
         }
-        for (int i = TERRAIN_N - 2; i >= 0; i--) {
-            float d = h[i] - h[i + 1];
-            if (d >  max_d) h[i] = h[i + 1] + max_d;
-            if (d < -max_d) h[i] = h[i + 1] - max_d;
+        for (int k = M - 1; k >= 0; k--) {
+            int i = k, j = (k + 1) % M;
+            float d = h[i] - h[j];
+            if (d >  max_d) { h[i] = h[j] + max_d; changed = true; }
+            if (d < -max_d) { h[i] = h[j] - max_d; changed = true; }
         }
+        if (!changed) break;
     }
+    h[TERRAIN_N - 1] = h[0];
 
     /* carve flat pads; wider pad -> lower multiplier. Pads narrow at
-     * higher levels.                                                    */
+     * higher levels. A pad must be a run of whole vertices to be flat
+     * under terrain_y's interpolation, so widths are counted in 15 px
+     * segments: 3/4/5/6 segs = 45/60/75/90 px -> 5X/4X/3X/2X.
+     * The narrowest (45 px) still clears Eagle's stance at max legal
+     * tilt (~30 px, see landing_test.c) with ~15 px to spare.
+     * Levels 1-3 offer 4X/3X/2X; level 4+ offers 5X/4X/3X.             */
+    enum { BLEND = 4 };                          /* vertices each side */
     int shrink = g->level >= 4 ? 1 : 0;
-    int used[N_PADS];
+    int width[N_PADS], start[N_PADS], order[N_PADS];
+    int slack = (TERRAIN_N - 2);                 /* zones live in 1..N-2 */
     for (int p = 0; p < N_PADS; p++) {
-        int width = 3 + p - shrink;              /* vertices, >= 2 */
-        if (width < 2) width = 2;
-        int start;
-        bool clash;
-        do {
-            clash = false;
-            start = 2 + (int)(frand(&g->rng) * (TERRAIN_N - width - 4));
-            for (int q = 0; q < p; q++)
-                if (abs(start - used[q]) < 9) clash = true;
-        } while (clash);
-        used[p] = start;
+        width[p] = (6 - p - shrink) + 1;         /* 6,5,4 or 5,4,3 segs */
+        slack   -= width[p] + 2 * BLEND;
+        order[p] = p;
+    }
+    /* Layout: each pad reserves itself plus its blend zones, so no
+     * blend can reach another pad. Shuffle the left-to-right order,
+     * then split the leftover slack into N_PADS+1 random gaps. This is
+     * constructive, so it always terminates (rejection sampling can
+     * paint itself into a corner).                                     */
+    for (int p = N_PADS - 1; p > 0; p--) {
+        int j = (int)(frand(&g->rng) * (float)(p + 1));
+        int t = order[p]; order[p] = order[j]; order[j] = t;
+    }
+    int cut[N_PADS];
+    for (int p = 0; p < N_PADS; p++)
+        cut[p] = (int)(frand(&g->rng) * (float)(slack + 1));
+    for (int a = 1; a < N_PADS; a++)             /* insertion sort */
+        for (int b = a; b > 0 && cut[b - 1] > cut[b]; b--) {
+            int t = cut[b]; cut[b] = cut[b - 1]; cut[b - 1] = t;
+        }
+    int x = 1;                                   /* left edge of next zone */
+    for (int k = 0; k < N_PADS; k++) {
+        x += cut[k] - (k ? cut[k - 1] : 0);      /* gap before this zone */
+        int p = order[k];
+        start[p] = x + BLEND;
+        x += width[p] + 2 * BLEND;
+    }
 
-        float y = 0.5f * (h[start] + h[start + width - 1]);
-        for (int i = 0; i < width; i++) h[start + i] = y;
+    for (int p = 0; p < N_PADS; p++) {
+        int s = start[p], w = width[p];
+        float y = 0.5f * (h[s] + h[s + w - 1]);
+        for (int i = 0; i < w; i++) h[s + i] = y;
 
         /* blend outward so carving can't create a wall steeper than
-         * max_d. Pads are >= 9 vertices apart, so a 4-vertex blend can
-         * never touch another pad.                                     */
-        for (int i = start - 1; i >= 0 && i >= start - 4; i--) {
+         * max_d. Zones are disjoint, so a blend never touches a pad.  */
+        for (int i = s - 1; i >= 0 && i >= s - BLEND; i--) {
             float d = h[i] - h[i + 1];
             if (d >  max_d) h[i] = h[i + 1] + max_d;
             if (d < -max_d) h[i] = h[i + 1] - max_d;
         }
-        for (int i = start + width; i < TERRAIN_N && i <= start + width + 3; i++) {
+        for (int i = s + w; i < TERRAIN_N && i < s + w + BLEND; i++) {
             float d = h[i] - h[i - 1];
             if (d >  max_d) h[i] = h[i - 1] + max_d;
             if (d < -max_d) h[i] = h[i - 1] - max_d;
         }
 
-        g->pads[p].x0   = (float)start / (TERRAIN_N - 1) * W;
-        g->pads[p].x1   = (float)(start + width - 1) / (TERRAIN_N - 1) * W;
+        g->pads[p].x0   = (float)s / (TERRAIN_N - 1) * W;
+        g->pads[p].x1   = (float)(s + w - 1) / (TERRAIN_N - 1) * W;
         g->pads[p].y    = y * H;
-        g->pads[p].mult = 7 - width;             /* w5->2x ... w2->5x */
+        g->pads[p].mult = 9 - w;                 /* 7 verts->2X ... 4->5X */
     }
 
     for (int i = 0; i < TERRAIN_N; i++) {
@@ -402,18 +445,26 @@ static void gen_terrain(Game *g)
     }
 }
 
+/* map any x into [0, W): the world is a horizontal ring */
+static float wrap_x(float x)
+{
+    x = fmodf(x, (float)W);
+    if (x < 0.0f) x += (float)W;
+    return x;
+}
+
 static float terrain_y(const Game *g, float x)
 {
-    if (x <= 0)     return g->terrain[0].y;
-    if (x >= W - 1) return g->terrain[TERRAIN_N - 1].y;
-    float fx = x / W * (TERRAIN_N - 1);
+    float fx = wrap_x(x) / W * (TERRAIN_N - 1);
     int   i  = (int)fx;
-    float t  = fx - i;
+    if (i > TERRAIN_N - 2) i = TERRAIN_N - 2;    /* float edge case */
+    float t  = fx - (float)i;
     return g->terrain[i].y * (1 - t) + g->terrain[i + 1].y * t;
 }
 
 static const Pad *pad_under(const Game *g, float x)
 {
+    x = wrap_x(x);
     for (int p = 0; p < N_PADS; p++)
         if (x >= g->pads[p].x0 && x <= g->pads[p].x1) return &g->pads[p];
     return NULL;
@@ -435,6 +486,7 @@ static void reset_lander(Game *g)
 static void new_game(Game *g)
 {
     if (g->level < 1) g->level = 1;
+    if (!g->fx_rng) g->fx_rng = 0x9E3779B9u;     /* xorshift must not be 0 */
     g->gravity = GRAVITY * (1.0f + 0.07f * (float)(g->level - 1));
     gen_terrain(g);
     for (int i = 0; i < N_STARS; i++)
@@ -465,15 +517,15 @@ static void spawn_exhaust(Game *g, float dt)
         for (int i = 0; i < N_PARTICLES; i++) {
             Particle *p = &g->particles[i];
             if (p->life > 0) continue;
-            float spread = frange(&g->rng, -0.45f, 0.45f);
-            float speed  = frange(&g->rng, 70.0f, 140.0f);
+            float spread = frange(&g->fx_rng, -0.45f, 0.45f);
+            float speed  = frange(&g->fx_rng, 70.0f, 140.0f);
             p->pos = (Vec2){ g->lander.pos.x + s * 10.0f,
                              g->lander.pos.y + c * 10.0f };
             p->vel = (Vec2){
                 g->lander.vel.x + (s + spread * c) * speed,
                 g->lander.vel.y + (c - spread * s) * speed
             };
-            p->life = frange(&g->rng, 0.25f, 0.6f);
+            p->life = frange(&g->fx_rng, 0.25f, 0.6f);
             break;
         }
     }
@@ -483,11 +535,11 @@ static void spawn_explosion(Game *g)
 {
     for (int i = 0; i < N_PARTICLES; i++) {
         Particle *p = &g->particles[i];
-        float a = frand(&g->rng) * 6.2831853f;
-        float v = frange(&g->rng, 30.0f, 220.0f);
+        float a = frand(&g->fx_rng) * 6.2831853f;
+        float v = frange(&g->fx_rng, 30.0f, 220.0f);
         p->pos  = g->lander.pos;
         p->vel  = (Vec2){ cosf(a) * v, sinf(a) * v * 0.8f - 40.0f };
-        p->life = frange(&g->rng, 0.5f, 1.6f);
+        p->life = frange(&g->fx_rng, 0.5f, 1.6f);
     }
 }
 
@@ -527,6 +579,9 @@ static void update(Game *g, float dt)
         l->angle -= ROT_SPEED * dt;
     if (g->keys[SDL_SCANCODE_RIGHT] || g->keys[SDL_SCANCODE_D])
         l->angle += ROT_SPEED * dt;
+    /* keep angle in [-pi, pi] so tilt is just |angle| however many
+     * full rolls the pilot has done                                   */
+    l->angle = remainderf(l->angle, 6.2831853f);
 
     /* thrust — semi-implicit Euler (symplectic; fine at these dt's) */
     l->thrusting = (g->keys[SDL_SCANCODE_UP] || g->keys[SDL_SCANCODE_W])
@@ -546,37 +601,52 @@ static void update(Game *g, float dt)
     l->pos.x += l->vel.x * dt;
     l->pos.y += l->vel.y * dt;
 
-    if (l->pos.x < 0) l->pos.x += W;
-    if (l->pos.x > W) l->pos.x -= W;
+    l->pos.x = wrap_x(l->pos.x);
 
-    /* ground contact: leg tips at (+-13, +12) in body frame.
+    /* ground contact: leg tips at (+-LEG_X, LEG_Y) in body frame.
      * body->world: (bx,by) -> (bx*c - by*s, bx*s + by*c)             */
     float s = sinf(l->angle), c = cosf(l->angle);
-    Vec2 fl = { l->pos.x + (-13.0f * c - 12.0f * s),
-                l->pos.y + (-13.0f * s + 12.0f * c) };
-    Vec2 fr = { l->pos.x + ( 13.0f * c - 12.0f * s),
-                l->pos.y + ( 13.0f * s + 12.0f * c) };
+    Vec2 fl = { l->pos.x + (-LEG_X * c - LEG_Y * s),
+                l->pos.y + (-LEG_X * s + LEG_Y * c) };
+    Vec2 fr = { l->pos.x + ( LEG_X * c - LEG_Y * s),
+                l->pos.y + ( LEG_X * s + LEG_Y * c) };
 
     bool hitL = fl.y >= terrain_y(g, fl.x);
     bool hitR = fr.y >= terrain_y(g, fr.x);
-    if (!(hitL || hitR)) return;
+
+    /* hull: anything other than the feet touching rock is a crash.
+     * Points sit on Eagle's drawn outline. The belly's lowest point
+     * (0, 11) is left out on purpose: it is 1 px above the feet, so a
+     * legal upright touchdown could graze it within one frame.        */
+    static const Vec2 hull[] = {
+        { -6.5f, -17.0f }, { 6.5f, -17.0f }, { 0.0f, -13.5f }, /* ears, crown */
+        { -6.0f,  -8.0f }, { 6.0f,  -8.0f },                   /* cheeks      */
+        {-10.5f,   3.0f }, {10.5f,   3.0f },                   /* belly sides */
+        { -7.4f,   8.7f }, { 7.4f,   8.7f },                   /* lower belly */
+        { 15.5f,  -2.0f }, {14.5f,   3.0f },                   /* tail        */
+    };
+    bool hull_hit = false;
+    for (size_t k = 0; k < sizeof hull / sizeof hull[0] && !hull_hit; k++) {
+        float hx = l->pos.x + hull[k].x * c - hull[k].y * s;
+        float hy = l->pos.y + hull[k].x * s + hull[k].y * c;
+        hull_hit = hy >= terrain_y(g, hx);
+    }
+    if (!(hitL || hitR || hull_hit)) return;
 
     const Pad *pad   = pad_under(g, l->pos.x);
     bool on_pad      = pad && pad_under(g, fl.x) && pad_under(g, fr.x);
-    float tilt       = fabsf(fmodf(l->angle + 3.14159265f, 6.2831853f)
-                             - 3.14159265f);
     bool soft        = fabsf(l->vel.y) <= SAFE_VY &&
                        fabsf(l->vel.x) <= SAFE_VX &&
-                       tilt <= SAFE_ANGLE;
+                       fabsf(l->angle) <= SAFE_ANGLE;   /* angle is wrapped */
 
     audio_set_thrust(&g->audio, false);
-    if (on_pad && soft) {
+    if (on_pad && soft && !hull_hit) {
         g->state = ST_LANDED;
         g->landing_bonus = 50 * pad->mult + (int)(l->fuel);
         g->score += g->landing_bonus;
         l->vel = (Vec2){ 0, 0 };
         l->angle = 0;
-        l->pos.y = pad->y - 12.0f;
+        l->pos.y = pad->y - LEG_Y;
         audio_trigger_landing(&g->audio);
     } else {
         g->state = ST_CRASHED;
@@ -689,6 +759,9 @@ static void draw_dot(SDL_Renderer *r, float bx, float by, float rad,
     SDL_RenderFillRectF(r, &q);
 }
 
+enum { EAGLE_R = 24 };   /* px: Eagle's reach from centre incl. flame */
+static void draw_eagle(Game *g, float lx);
+
 static void render_world(Game *g)
 {
     SDL_SetRenderDrawColor(g->ren, 140, 140, 170, 255);
@@ -717,64 +790,74 @@ static void render_world(Game *g)
         int a = (int)(p->life * 400);
         if (a > 255) a = 255;
         SDL_SetRenderDrawColor(g->ren, 255,
-                               (uint8_t)(160 + frand(&g->rng) * 60),
+                               (uint8_t)(160 + frand(&g->fx_rng) * 60),
                                60, (uint8_t)a);
         SDL_RenderDrawPointF(g->ren, p->pos.x, p->pos.y);
         SDL_RenderDrawPointF(g->ren, p->pos.x + 1, p->pos.y);
     }
 
     if (g->state != ST_CRASHED) {
-        Lander *l = &g->lander;
-        float lx = l->pos.x, ly = l->pos.y, la = l->angle;
+        /* the world wraps: while Eagle straddles an edge, draw a ghost
+         * copy on the far side so he never half-vanishes             */
+        float lx = g->lander.pos.x;
+        draw_eagle(g, lx);
+        if (lx < EAGLE_R)     draw_eagle(g, lx + W);
+        if (lx > W - EAGLE_R) draw_eagle(g, lx - W);
+    }
+}
 
-        /* Eagle the fat cat. Body frame: up is -y; collision feet
-         * remain at (+-13, +12), matching the legs drawn below.      */
-        SDL_SetRenderDrawColor(g->ren, 255, 170, 80, 255);   /* orange */
-        draw_ellipse(g->ren, 0.0f,  3.0f, 10.5f, 8.0f, lx, ly, la); /* body */
-        draw_ellipse(g->ren, 0.0f, -8.0f,  6.0f, 5.5f, lx, ly, la); /* head */
-        {
-            static const Vec2 earL[] = { {-5.0f,-11.5f},{-6.5f,-17.0f},{-1.5f,-13.0f} };
-            static const Vec2 earR[] = { { 5.0f,-11.5f},{ 6.5f,-17.0f},{ 1.5f,-13.0f} };
-            static const Vec2 tail[] = { {10.0f,6.0f},{14.5f,3.0f},{15.5f,-2.0f},{12.5f,-4.5f} };
-            static const Vec2 legL[] = { {-6.0f,9.5f},{-10.0f,12.0f},{-13.0f,12.0f} };
-            static const Vec2 legR[] = { { 6.0f,9.5f},{ 10.0f,12.0f},{ 13.0f,12.0f} };
-            draw_lines(g->ren, earL, 3, lx, ly, la, 1.0f);
-            draw_lines(g->ren, earR, 3, lx, ly, la, 1.0f);
-            draw_lines(g->ren, tail, 4, lx, ly, la, 1.0f);
-            draw_lines(g->ren, legL, 3, lx, ly, la, 1.0f);
-            draw_lines(g->ren, legR, 3, lx, ly, la, 1.0f);
-        }
+/* Eagle the fat cat at screen x = lx. Body frame: up is -y; the legs
+ * drawn below end at the collision feet (+-LEG_X, LEG_Y).             */
+static void draw_eagle(Game *g, float lx)
+{
+    const Lander *l = &g->lander;
+    float ly = l->pos.y, la = l->angle;
 
-        /* whiskers — prominently visible, three per side */
-        SDL_SetRenderDrawColor(g->ren, 240, 240, 250, 255);
-        {
-            static const Vec2 wsk[6][2] = {
-                { {-4.5f,-8.5f}, {-13.0f,-10.0f} },
-                { {-5.0f,-7.5f}, {-13.5f, -7.5f} },
-                { {-4.5f,-6.5f}, {-13.0f, -5.0f} },
-                { { 4.5f,-8.5f}, { 13.0f,-10.0f} },
-                { { 5.0f,-7.5f}, { 13.5f, -7.5f} },
-                { { 4.5f,-6.5f}, { 13.0f, -5.0f} },
-            };
-            for (int i = 0; i < 6; i++)
-                draw_lines(g->ren, wsk[i], 2, lx, ly, la, 1.0f);
-        }
+    SDL_SetRenderDrawColor(g->ren, 255, 170, 80, 255);   /* orange */
+    draw_ellipse(g->ren, 0.0f,  3.0f, 10.5f, 8.0f, lx, ly, la); /* body */
+    draw_ellipse(g->ren, 0.0f, -8.0f,  6.0f, 5.5f, lx, ly, la); /* head */
+    {
+        static const Vec2 earL[] = { {-5.0f,-11.5f},{-6.5f,-17.0f},{-1.5f,-13.0f} };
+        static const Vec2 earR[] = { { 5.0f,-11.5f},{ 6.5f,-17.0f},{ 1.5f,-13.0f} };
+        static const Vec2 tail[] = { {10.0f,6.0f},{14.5f,3.0f},{15.5f,-2.0f},{12.5f,-4.5f} };
+        static const Vec2 legL[] = { {-6.0f,9.5f},{-10.0f,LEG_Y},{-LEG_X,LEG_Y} };
+        static const Vec2 legR[] = { { 6.0f,9.5f},{ 10.0f,LEG_Y},{ LEG_X,LEG_Y} };
+        draw_lines(g->ren, earL, 3, lx, ly, la, 1.0f);
+        draw_lines(g->ren, earR, 3, lx, ly, la, 1.0f);
+        draw_lines(g->ren, tail, 4, lx, ly, la, 1.0f);
+        draw_lines(g->ren, legL, 3, lx, ly, la, 1.0f);
+        draw_lines(g->ren, legR, 3, lx, ly, la, 1.0f);
+    }
 
-        /* blue eyes */
-        SDL_SetRenderDrawColor(g->ren, 70, 150, 255, 255);
-        draw_dot(g->ren, -2.5f, -9.0f, 1.6f, lx, ly, la);
-        draw_dot(g->ren,  2.5f, -9.0f, 1.6f, lx, ly, la);
+    /* whiskers — prominently visible, three per side */
+    SDL_SetRenderDrawColor(g->ren, 240, 240, 250, 255);
+    {
+        static const Vec2 wsk[6][2] = {
+            { {-4.5f,-8.5f}, {-13.0f,-10.0f} },
+            { {-5.0f,-7.5f}, {-13.5f, -7.5f} },
+            { {-4.5f,-6.5f}, {-13.0f, -5.0f} },
+            { { 4.5f,-8.5f}, { 13.0f,-10.0f} },
+            { { 5.0f,-7.5f}, { 13.5f, -7.5f} },
+            { { 4.5f,-6.5f}, { 13.0f, -5.0f} },
+        };
+        for (int i = 0; i < 6; i++)
+            draw_lines(g->ren, wsk[i], 2, lx, ly, la, 1.0f);
+    }
 
-        /* pink nose */
-        SDL_SetRenderDrawColor(g->ren, 255, 120, 150, 255);
-        draw_dot(g->ren, 0.0f, -6.3f, 1.0f, lx, ly, la);
+    /* blue eyes */
+    SDL_SetRenderDrawColor(g->ren, 70, 150, 255, 255);
+    draw_dot(g->ren, -2.5f, -9.0f, 1.6f, lx, ly, la);
+    draw_dot(g->ren,  2.5f, -9.0f, 1.6f, lx, ly, la);
 
-        if (l->thrusting && g->state == ST_FLYING) {
-            SDL_SetRenderDrawColor(g->ren, 255, 190, 60, 255);
-            float flick = 6.0f + frand(&g->rng) * 6.0f;
-            Vec2 flame[] = { {-4,11},{0,11 + flick},{4,11} };
-            draw_lines(g->ren, flame, 3, lx, ly, la, 1.0f);
-        }
+    /* pink nose */
+    SDL_SetRenderDrawColor(g->ren, 255, 120, 150, 255);
+    draw_dot(g->ren, 0.0f, -6.3f, 1.0f, lx, ly, la);
+
+    if (l->thrusting && g->state == ST_FLYING) {
+        SDL_SetRenderDrawColor(g->ren, 255, 190, 60, 255);
+        float flick = 6.0f + frand(&g->fx_rng) * 6.0f;
+        Vec2 flame[] = { {-4,11},{0,11 + flick},{4,11} };
+        draw_lines(g->ren, flame, 3, lx, ly, la, 1.0f);
     }
 }
 
@@ -916,7 +999,11 @@ static void handle_key(Game *g, SDL_Scancode sc)
             g->score = 0;
             new_game(g);
         } else if (sc == SDL_SCANCODE_ESCAPE) {
+#ifndef __EMSCRIPTEN__
+            /* in a browser tab there is nothing to quit to: stopping
+             * the main loop would just leave a dead canvas            */
             g->running = false;
+#endif
         }
         break;
 
@@ -1010,7 +1097,8 @@ int main(int argc, char **argv)
     }
 
     Game *g = &g_game;
-    g->rng = (uint32_t)time(NULL) | 1;
+    g->rng    = (uint32_t)time(NULL) | 1;
+    g->fx_rng = (uint32_t)time(NULL) * 2654435761u | 1;
     g->running = true;
     g->level = 1;
     g->state = ST_TITLE;

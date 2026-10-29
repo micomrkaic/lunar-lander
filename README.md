@@ -60,23 +60,47 @@ make itch
 make test
 ```
 
-Two harnesses `#include lander.c` directly, so they always exercise the
-exact shipping code:
+Four harnesses `#include lander.c` directly, so they always exercise
+the exact shipping code:
 
 - `terrain_test` generates 16,000 terrains (2,000 seeds x 8 levels) and
-  asserts every vertex is inside the window, every slope is bounded,
-  and every landing pad is flat under the same interpolation the
-  collision code uses.
+  asserts every vertex is inside the window, every edge — including
+  across the screen-wrap seam — respects that level's slope cap, the
+  ground joins up seamlessly at the wrap, and every landing pad is flat
+  under the same interpolation the collision code uses.
+- `landing_test` drops Eagle gently onto every pad of those 16,000
+  terrains — upright and at just under the legal tilt each way — through
+  the real `update()` collision path, and requires a landing every time.
+  It also checks each pad's width matches its multiplier (5X = 45 px up
+  to 2X = 90 px) and leaves at least 8 px of slack beyond Eagle's
+  stance at maximum tilt.
+- `physics_test` checks that Eagle crashes on first hull contact when
+  he comes down inverted or rolled (rather than sinking until his feet
+  touch), that an upright landing still counts after any number of full
+  rolls, that flying and rendering never draw from the gameplay RNG (so
+  a seed fully determines the terrain), and that Eagle is drawn on both
+  sides of the screen while straddling the wrap.
 - `hiscore_test` checks high-score ordering, the table cap, score
-  qualification, the default pilot name, and a save/load round trip.
+  qualification, the default pilot name, and a save/load round trip. It
+  uses its own scratch file, and `make test` fails if your real
+  `lander_hiscores.txt` changes during the run.
+
+`make clean` removes build products only; it leaves your high scores
+alone.
 
 ## Design notes
 
 - **Physics**: semi-implicit (symplectic) Euler; lunar-ish gravity,
   thrust along the body axis, fuel burn, horizontal screen wrap.
+  Landing is judged at the feet; any other part of Eagle touching rock
+  is a crash.
 - **Terrain**: midpoint-displacement heightmap (2^k + 1 vertices),
-  slope-limited so cliffs stay flyable, with flat pads carved in and
-  their edges blended back under the slope cap.
+  periodic so it wraps with the screen, slope-limited around the whole
+  ring so cliffs stay flyable, with flat pads carved in and their edges
+  blended back under the slope cap.
+- **Randomness**: two generators. One drives gameplay (terrain, stars,
+  spawn point) and nothing else; the other drives cosmetics (exhaust,
+  sparks, flame flicker), so a seed reproduces the same level.
 - **Sound**: synthesized live in the SDL audio callback — filtered
   noise for thrust, a decaying noise burst for the crash, a rising
   arpeggio for touchdown. No assets, no SDL_mixer.
@@ -85,7 +109,7 @@ exact shipping code:
 - **High scores**: a plain text file natively; an IndexedDB-backed
   IDBFS mount in the browser, so scores persist across sessions
   (per browser — it is a local table, not a global leaderboard).
-- **One file**: everything above is ~900 lines of C17 in `lander.c`.
+- **One file**: everything above is ~1,150 lines of C17 in `lander.c`.
   The only dependency is SDL2.
 
 ## Credits
